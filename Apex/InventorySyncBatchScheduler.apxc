@@ -1,0 +1,6 @@
+global class InventorySyncBatchScheduler implements Schedulable {
+    global void execute(SchedulableContext sc) {
+        VehicleOrderBatch job = new VehicleOrderBatch();  // Or another batch class if it's different
+        Database.executeBatch(job, 50);
+    }
+}
