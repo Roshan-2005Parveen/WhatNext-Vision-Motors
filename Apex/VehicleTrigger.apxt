@@ -1,0 +1,14 @@
+trigger VehicleTrigger on Vehicle__c (after update) {
+    Set<Id> stockRefilledVehicleIds = new Set<Id>();
+
+    for (Vehicle__c v : Trigger.new) {
+        Vehicle__c oldV = Trigger.oldMap.get(v.Id);
+        if (oldV.Stock_Quantity__c == 0 && v.Stock_Quantity__c > 0) {
+            stockRefilledVehicleIds.add(v.Id);
+        }
+    }
+
+    if (!stockRefilledVehicleIds.isEmpty()) {
+        VehicleOrderTriggerHandler.confirmPendingOrders(stockRefilledVehicleIds);
+    }
+}
