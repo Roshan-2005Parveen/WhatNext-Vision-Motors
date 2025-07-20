@@ -1,6 +1,11 @@
 public class VehicleOrderTriggerHandler {    
 
-    public static void handleTrigger(List<Vehicle_Order__c> newOrders, Map<Id, Vehicle_Order__c> oldOrders, Boolean isBefore, Boolean isAfter, Boolean isInsert, Boolean isUpdate) {
+    private static Boolean isHandlerRunning = false; // Recursion guard
+
+    public static void handleTrigger(List<Vehicle_Order__c> newOrders, Map<Id, Vehicle_Order__c> oldOrders, 
+                                     Boolean isBefore, Boolean isAfter, Boolean isInsert, Boolean isUpdate) {
+        if (isHandlerRunning) return; 
+        isHandlerRunning = true;
 
         if (isBefore) {
             if (isInsert || isUpdate) {
@@ -14,11 +19,11 @@ public class VehicleOrderTriggerHandler {
             }
         }
 
+        isHandlerRunning = false;
     }
 
-    // Method to prevent orders when the vehicle is out of stock
+    // Prevent orders when vehicle is out of stock
     private static void preventOrderIfOutOfStock(List<Vehicle_Order__c> orders) {
-
         Set<Id> vehicleIds = new Set<Id>();
         for (Vehicle_Order__c order : orders) {
             if (order.Vehicle__c != null) {
@@ -35,47 +40,64 @@ public class VehicleOrderTriggerHandler {
                 if (vehicleStockMap.containsKey(order.Vehicle__c)) {
                     Vehicle__c vehicle = vehicleStockMap.get(order.Vehicle__c);
                     if (vehicle.Stock_Quantity__c <= 0) {
-                        order.addError('This vehicle is out of stock. Order cannot be placed.');
+                        //order.addError('This vehicle is out of stock. Order cannot be placed.');
+                        order.Status__c = 'Pending';
                     }
                 }
             }
         }
     }
 
-    // Method to update vehicle stock when an order is placed
-    private static void updateStockOnOrderPlacement(List<Vehicle_Order__c> orders, Map<Id, Vehicle_Order__c> oldOrders, Boolean isUpdate) {
+    // Update vehicle stock when an order is confirmed
+    private static void updateStockOnOrderPlacement(List<Vehicle_Order__c> orders, 
+                                                    Map<Id, Vehicle_Order__c> oldOrders, Boolean isUpdate) {
 
-        Set<Id> vehicleIds = new Set<Id>();
+        Map<Id, Vehicle__c> vehiclesToUpdateMap = new Map<Id, Vehicle__c>();
 
         for (Vehicle_Order__c order : orders) {
             if (order.Vehicle__c != null && order.Status__c == 'Confirmed') {
-                // Only decrease stock if this is a new confirmation
+                // Only decrease stock if it's a new confirmation
                 if (!isUpdate || (oldOrders != null && oldOrders.get(order.Id).Status__c != 'Confirmed')) {
-                    vehicleIds.add(order.Vehicle__c);
-                }
-            }
-        }
-
-        if (!vehicleIds.isEmpty()) {
-            Map<Id, Vehicle__c> vehicleStockMap = new Map<Id, Vehicle__c>(
-                [SELECT Id, Stock_Quantity__c FROM Vehicle__c WHERE Id IN :vehicleIds]
-            );
-
-            List<Vehicle__c> vehiclesToUpdate = new List<Vehicle__c>();
-
-            for (Vehicle_Order__c order : orders) {
-                if (vehicleStockMap.containsKey(order.Vehicle__c)) {
-                    Vehicle__c vehicle = vehicleStockMap.get(order.Vehicle__c);
-                    if (vehicle.Stock_Quantity__c > 0) {
-                        vehicle.Stock_Quantity__c = Math.max(0, vehicle.Stock_Quantity__c - 1);
-                        vehiclesToUpdate.add(vehicle);
+                    Vehicle__c vehicle = vehiclesToUpdateMap.get(order.Vehicle__c);
+                    if (vehicle == null) {
+                        vehicle = new Vehicle__c(Id = order.Vehicle__c);
+                        vehiclesToUpdateMap.put(order.Vehicle__c, vehicle);
                     }
+                    vehicle.Stock_Quantity__c = (vehicle.Stock_Quantity__c == null ? 0 : vehicle.Stock_Quantity__c) - 1;
                 }
             }
+        }
 
-            if (!vehiclesToUpdate.isEmpty()) {
-                update vehiclesToUpdate;
+        if (!vehiclesToUpdateMap.isEmpty()) {
+            update vehiclesToUpdateMap.values();
+        }
+    }
+
+    // Confirm pending orders if stock is refilled
+    public static void confirmPendingOrders(Set<Id> vehicleIds) {
+        List<Vehicle__c> vehicles = [SELECT Id, Stock_Quantity__c FROM Vehicle__c WHERE Id IN :vehicleIds];
+        List<Vehicle_Order__c> ordersToUpdate = new List<Vehicle_Order__c>();
+        List<Vehicle__c> vehiclesToUpdate = new List<Vehicle__c>();
+
+        for (Vehicle__c v : vehicles) {
+            if (v.Stock_Quantity__c > 0) {
+                List<Vehicle_Order__c> pendingOrders = [
+                    SELECT Id, Status__c FROM Vehicle_Order__c
+                    WHERE Vehicle__c = :v.Id AND Status__c = 'Pending'
+                    ORDER BY CreatedDate ASC
+                    LIMIT :Integer.valueOf(v.Stock_Quantity__c)
+                ];
+
+                for (Vehicle_Order__c order : pendingOrders) {
+                    order.Status__c = 'Confirmed';
+                    ordersToUpdate.add(order);
+                    v.Stock_Quantity__c--;
+                }
+                vehiclesToUpdate.add(v);
             }
         }
+
+        if (!ordersToUpdate.isEmpty()) update ordersToUpdate;
+        if (!vehiclesToUpdate.isEmpty()) update vehiclesToUpdate;
     }
 }
